@@ -15,6 +15,9 @@ $sms = new-object -comobject 'Microsoft.SMS.Client'
 $siteCode = $sms.GetAssignedSite()
 Write-Host "Site Code: $siteCode"
 
+$configMgrGUID = Get-CimInstance -Namespace root\ccm -ClassName CCM_Client | Select-Object -ExpandProperty ClientId
+Write-Host "$configMgrGUID"
+
 # Client Version
 try {
             if ($PowerShellVersion -ge 6) { $clientVersion = (Get-CimInstance -Namespace root/ccm SMS_Client).ClientVersion }
@@ -224,6 +227,53 @@ if ($StateMessage -match 'Successfully forwarded State Messages to the MP') {
         }
 else {Write-Host "Based on the StateMessage.log there could be an issue with the communication to the MP" -ForegroundColor Red }
 
+$MP = Get-WmiObject -Namespace root\ccm -Class SMS_Authority | select -ExpandProperty CurrentManagementPoint
+
+# DNS test to the MP
+try {
+    $dns = Resolve-DnsName $MP -ErrorAction Stop
+    Write-Host "DNS lookup to the Manamenet Poin ($MP): OK" -ForegroundColor Green
+}
+catch {
+    Write-Host "DNS lookup FAILED to MP ($MP)" -ForegroundColor Red}
+
+# Port test to the MP
+try {
+        $tcp = New-Object System.Net.Sockets.TcpClient
+        $tcp.Connect($MP,80)
+        $tcp.Close()
+        Write-Host "Port 80 test to the Management Point: OK" -ForegroundColor Green
+    }
+catch {
+        Write-Host "Port 80 FAILED to the Management Point" -ForegroundColor Red
+    }
+
+# MP cert endpoint
+$url1 = "http://$MP/SMS_MP/.sms_aut?mpcert"
+try {
+    $r = Invoke-WebRequest -Uri $url1 -UseBasicParsing -TimeoutSec 10
+    if ($r.StatusCode -eq 200) {
+        Write-Host "Request to the MPCERT endpoint: OK" -ForegroundColor Green
+    }
+}
+catch {
+    Write-Host "Request to the MPCERT endpoint FAILED" -ForegroundColor Red
+}
+
+# MP list endpoint
+$url2 = "http://$MP/SMS_MP/.sms_aut?mplist"
+try {
+    $r = Invoke-WebRequest -Uri $url2 -UseBasicParsing -TimeoutSec 10
+    if ($r.StatusCode -eq 200) {
+        Write-Host "Request to the MPLIST endpoint: OK" -ForegroundColor Green
+    }
+}
+catch {
+    Write-Host "equest to the MPLIST endpoint FAILED" -ForegroundColor Red
+}
+
+
+
 
 # checking WuaHandler.log
 $logfile = "$logdir\WUAHandler.log"
@@ -238,7 +288,7 @@ $MachineRegistryFile = "$($env:WinDir)\System32\GroupPolicy\Machine\registry.pol
 $file = Get-ChildItem -Path $MachineRegistryFile -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty LastWriteTime
 $regPolDate = Get-Date($file)
 $now = Get-Date
-if (($now - $regPolDate).Days -ge 0) {Write-Host "Machine registry file is older than 1 day" -ForegroundColor Red}
+if (($now - $regPolDate).Days -ge 0) {Write-Host "Machine registry.pol file is older than 1 day" -ForegroundColor Red}
 else{Write-Host "Machine registry.pol file age: OK" -ForegroundColor Green}          
 
 # orphaned cache folders
@@ -256,7 +306,7 @@ ForEach ($CachedFolder in $AllCachedFolders) {
             }
 
 # checking services
-$services = @("BITS", "winmgmt", "wuauserv", "lanmanserver", "RpcSs", "W32Time", "ccmexec", "PeerDistSvc")
+$services = @("BITS", "winmgmt", "wuauserv", "lanmanserver", "RpcSs", "W32Time", "ccmexec")
 foreach ($service in $services) {
 
     $obj = Get-Service -Name $service
@@ -310,6 +360,13 @@ else {Write-Host "There was no Hardware Inventory sync in the last 6 hours" -For
       Catch {Write-Host "Hardware Inventory cycle couldn't be triggered" -ForegroundColor Red}
 }
 
+# check if Domain Admins in the local admins group
+$group = "Domain Admins"
+$admins = Get-LocalGroupMember -Group "Administrators" | select -ExpandProperty Name
+if ($admins -match "Domain Admins") {
+     Write-Host 'Domain Admins in the local admins group: OK' -ForegroundColor Green
+     }
+else{Write-Host 'Domain Admins is not member of the local admins group' -ForegroundColor Red}
 
 $input = Read-Host "Do you want to execute extended Windows Update troubleshooting? (yes or no)"
 if($input -eq "yes" -or $input -eq "y"){
