@@ -70,6 +70,7 @@ $logdir = (Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\CCM\Logging\@Global'
 $ccmDirectory = $logdir.replace("\Logs", "")
 Write-Host "ConfigMgr Client Directory: $ccmDirectory"
 
+
 # Last Update Informations
 $Session = New-Object -ComObject Microsoft.Update.Session
 $Searcher = $Session.CreateUpdateSearcher()
@@ -85,7 +86,78 @@ foreach($update in $lastUpdate){
     $counter = $counter + 1
 }
 
+# Update errors in the event log
+
+$updateInstallErrors = Get-WinEvent -LogName System -FilterXPath "*[System[(EventID=20 or EventID=25 or EventID=31)]]" | where {$_.LevelDisplayName -eq "Error"} | select TimeCreated,Message
+
+if($updateInstallErrors){
+    Write-Host "Update errors found in the event log:" -ForegroundColor Red
+    foreach($updateInstallError in $updateInstallErrors){
+    $time = $updateInstallError.TimeCreated
+    $message = $updateInstallError.Message
+
+    Write-Host "$time : $message"
+
+    }
+}else{Write-Host "No update errors in the event log" -ForegroundColor Green}
+
+# Missing Updates
+
+$missingUpdates = get-wmiobject -query "SELECT * FROM CCM_UpdateStatus" -namespace "root\ccm\SoftwareUpdates\UpdatesStore" | where {$_.title -like "*Cumulative*" -and $_.status -eq "Missing"} | select title
+
+Write-Host "Missing Updates:"
+foreach($missingUpdate in $missingUpdates){
+    $missingUpdateTitle = $missingUpdate.title
+    Write-Host $missingUpdateTitle
+
+}
+
+# Maintanance Windows
+$serviceWindow = Get-WmiObject -Namespace "root\ccm\clientsdk" -Class CCM_ServiceWindow | Select-Object Name,StartTime,Duration
+if ($serviceWindow) {
+    Write-Host "Check Maintanance Window: OK" -ForegroundColor Green
+} else {
+    Write-Host "No Maintenance Windows configured." -ForegroundColor Red
+}
+
 Write-Host "############# Checking #############" -ForegroundColor Cyan
+
+# Checking if the metered connection is enabled
+[void][Windows.Networking.Connectivity.NetworkInformation, Windows, ContentType = WindowsRuntime]
+$cost = [Windows.Networking.Connectivity.NetworkInformation]::GetInternetConnectionProfile().GetConnectionCost()
+$isMeteredConnectionEnabled = $cost.ApproachingDataLimit -or $cost.OverDataLimit -or $cost.Roaming -or $cost.BackgroundDataUsageRestricted -or ($cost.NetworkCostType -ne "Unrestricted")
+
+if($isMeteredConnectionEnabled -eq $false){Write-Host "Metered connection check: OK" -ForegroundColor Green}
+else{Write-Host "Metered connection check: it is turned on and has to be turned off!" -ForegroundColor Red}
+
+# WSUS server
+$wuServer = (Get-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate').WUServer
+$wsusWithoutPort = $wuServer -replace '^https?://','' -replace ':\d+$',''
+$port = ($wuServer -split ':')[-1]
+$wuStatusServer = (Get-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate').WUStatusServer
+$useWUServer = (Get-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU').UseWUServer
+
+if($useWUServer -ne 1){Write-Host "UseWUServer check: the value is not 1" -ForegroundColor Red }
+else{Write-Host "UseWUServer check: OK" -ForegroundColor Green}
+
+#DNS check to the WSUS
+try {
+    $dns = Resolve-DnsName $wsusWithoutPort -ErrorAction Stop
+    Write-Host "DNS lookup to the WSUS server ($wsusWithoutPort): OK" -ForegroundColor Green
+}
+catch {
+    Write-Host "DNS lookup FAILED to the WSUS server ($wsusWithoutPort)" -ForegroundColor Red}
+
+#Port Check to the WSUS
+try {
+        $tcp = New-Object System.Net.Sockets.TcpClient
+        $tcp.Connect($wsusWithoutPort,$port)
+        $tcp.Close()
+        Write-Host "Port $port test to the WSUS: OK" -ForegroundColor Green
+    }
+catch {
+        Write-Host "Port $port connection FAILED to the WSUS" -ForegroundColor Red
+    }
 
 
 # Checking the Count of the SDF Files (Local Database Files) in the Directory 
@@ -103,8 +175,6 @@ $neededTriggers = @{
 "{00000000-0000-0000-0000-000000000114}" = "Software updates deployment evaluation cycle"
 "{00000000-0000-0000-0000-000000000031}" = "Software metering usage report cycle"
 "{00000000-0000-0000-0000-000000000121}" = "Application deployment evaluation cycle"
-"{00000000-0000-0000-0000-000000000026}" = "User policy retrieval"
-"{00000000-0000-0000-0000-000000000027}" = "User policy evaluation cycle"
 "{00000000-0000-0000-0000-000000000032}" = "Windows installer source list update cycle"
 }
 
@@ -361,21 +431,12 @@ catch {
 
 
 
-
-# Checking WuaHandler.log
-$logfile = "$logdir\WUAHandler.log"
-$logFileContent = Get-Content($logfile)
-if ($logFileContent -match '0x80004005' -or $logFileContent -match '0x87d00692') {
-            Write-Host "0x87d00692 or 0x80004005 error in the WUAHandler.log. Reinstallation of the ConfigMgr is needed" -ForegroundColor Red
-        }
-            Write-Verbose "Check machine registry file to see if it's older than $($Days) days."
-
 # Checking registry.pol File
 $MachineRegistryFile = "$($env:WinDir)\System32\GroupPolicy\Machine\registry.pol"
 $file = Get-ChildItem -Path $MachineRegistryFile -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty LastWriteTime
 $regPolDate = Get-Date($file)
 $now = Get-Date
-if (($now - $regPolDate).Days -ge 0) {Write-Host "Machine registry.pol file is older than 1 day" -ForegroundColor Red}
+if (($now - $regPolDate).Days -ne 0) {Write-Host "Machine registry.pol file is older than 1 day" -ForegroundColor Red}
 else{Write-Host "Machine registry.pol file age: OK" -ForegroundColor Green}          
 
 # Orphaned Cache Folders
@@ -384,13 +445,16 @@ if ($null -eq $CCMCache) { $CCMCache = "$env:SystemDrive\Windows\ccmcache" }
 $ValidCachedFolders = (New-Object -ComObject "UIResource.UIResourceMgr").GetCacheInfo().GetCacheElements() | ForEach-Object {$_.Location}
 $AllCachedFolders = (Get-ChildItem -Path $CCMCache) | Select-Object Fullname -ExpandProperty Fullname
 
+$counterForOrphFolders = 0
 ForEach ($CachedFolder in $AllCachedFolders) {
                 If ($ValidCachedFolders -notcontains $CachedFolder) {
                     if ((Get-ItemProperty $CachedFolder).LastWriteTime -le (get-date).AddDays(-30)) {
-                        Write-Host "Orphaned folder in ccmcache: $CachedFolder" -ForegroundColor Red
+                       $counterForOrphFolders = $counterForOrphFolders + 1
                     }
                 }
             }
+If ($counterForOrphFolders -eq 0) {Write-Host "Number of the orphaned folders in ccmcache: $counterForOrphFolders" -ForegroundColor Green} 
+else {Write-Host "Number of the orphaned folders in ccmcache: $counterForOrphFolders" -ForegroundColor Red}
 
 # Checking Services
 $services = @("BITS", "winmgmt", "wuauserv", "lanmanserver", "RpcSs", "W32Time", "ccmexec")
@@ -428,7 +492,10 @@ if (Select-String -Path "C:\Windows\CCM\Logs\CcmEval.log" -Pattern "failed" -Qui
     Write-Host "The Client Health maybe UNHEALTHY. The following errors are in the CcmEval.log:" -ForegroundColor Yellow 
         Select-String -Path "C:\Windows\CCM\Logs\CcmEval.log" -Pattern "failed" |
         ForEach-Object {
-            ($_ -replace '.*<!\[LOG\[','' -replace '\]LOG\].*','')
+            if(($_ -replace '.*<!\[LOG\[','' -replace '\]LOG\].*','') -ne "Failed to get SOFTWARE\Policies\Microsoft\Microsoft Antimalware\Real-Time Protection\DisableIntrusionPreventionSystem"){
+                ($_ -replace '.*<!\[LOG\[','' -replace '\]LOG\].*','')
+            }
+            
         }
     } 
     
@@ -583,3 +650,4 @@ Restart-Service 'wuauserv'
 ([wmiclass]'ROOT\ccm:SMS_Client').TriggerSchedule('{00000000-0000-0000-0000-000000000108}')
 
 }
+
