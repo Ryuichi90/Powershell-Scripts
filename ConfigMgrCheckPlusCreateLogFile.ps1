@@ -701,7 +701,7 @@ if (Test-Path $dismLogPath) {
     if ($dismHits) {
         Write-Log -Message "DISM.log contains suspicious entries" -Level "WARNING" -LogFile $logFile
         foreach ($line in $dismHits) {
-            Add-Content -Path $logFile -Value ("  - " + $line + " | " + $resolved)
+            Add-Content -Path $logFile -Value ("  - " + $line)
             }
 
             
