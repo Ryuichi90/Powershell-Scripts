@@ -278,6 +278,42 @@ $ccmDirectory = $logDirectory.replace("\Logs", "")
 try{[datetime]$lastClientHealthRun = (Get-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\CCM\CcmEval").LastEvalTime}
     catch{$lastClientHealthRun=[datetime]::MinValue}
 
+$actionmap = @{
+"{00000000-0000-0000-0000-000000000021}" = "Machine policy retrieval & evaluation cycle"
+"{00000000-0000-0000-0000-000000000022}" = "Machine policy evaluation cycle"
+"{00000000-0000-0000-0000-000000000001}" = "Hardware inventory cycle"
+"{00000000-0000-0000-0000-000000000003}" = "Discovery data collection cycle"
+"{00000000-0000-0000-0000-000000000113}" = "Software updates scan cycle"
+"{00000000-0000-0000-0000-000000000114}" = "Software updates deployment evaluation cycle"
+"{00000000-0000-0000-0000-000000000031}" = "Software metering usage report cycle"
+"{00000000-0000-0000-0000-000000000121}" = "Application deployment evaluation cycle"
+"{00000000-0000-0000-0000-000000000032}" = "Windows installer source list update cycle"
+}
+
+$schedulerHistory = Get-WmiObject -Namespace "root\ccm\Scheduler" -Class CCM_Scheduler_History
+
+$lastTriggerForActionsHtml = ""
+
+foreach($trigger in $schedulerHistory){
+    $actionName = $actionMap[$trigger.ScheduleID]
+
+    if(-not $actionName){
+        $actionName = "Unknown action"
+    }
+
+    if($trigger.LastTriggerTime -and $actionName -ne "Unknown action"){
+        $lastTriggerDate = [System.Management.ManagementDateTimeConverter]::ToDateTime($trigger.LastTriggerTime)
+        $formattedDate = $lastTriggerDate.ToString("yyyy-MM-dd HH:mm")
+	    $lastTriggerForActionsHtml += "$actionName - $formattedDate <br>"
+    }
+    else{
+        $formattedDate = "No trigger time"
+    }
+
+    
+}
+
+
 
 # Last Update Informations
 $Session = New-Object -ComObject Microsoft.Update.Session
@@ -334,7 +370,7 @@ if($missingUpdates){
     foreach($missingUpdate in $missingUpdates){
     $date = $missingUpdate.Date
     $title = $missingUpdate.Title
-    $stringForHTMLMissingUpdate += "$time - $message <br><br>"
+    $stringForHTMLMissingUpdate += "$date - $title <br><br>"
 
     }
 }else{$stringForHTMLMissingUpdate = "The client can not recognize that any updates are deployed but not installed"}
@@ -432,8 +468,12 @@ $htmlContent += @"
         <tr><td>Motherboard</td><td>$mbInfo</td></tr>
         <tr><td>Serialnumber</td><td>$serialNumber</td></tr>
       </table>
+      <br>
       <h2 style="margin-top:20px;">Network Informations</h2>
       <div class="section small" style="margin-bottom:10px;">$networkInfoHTML</div>
+      <br>
+      <h2 style="margin-top:20px;">Last Trigger Time of the Actions</h2>
+      <div class="section small" style="margin-bottom:10px;">$lastTriggerForActionsHtml</div>
     </section>
 
     
@@ -485,6 +525,16 @@ if (Test-Path $ccmSetupLogPath) {
 else {
     Add-HtmlErrorFinding -Title "Ccmsetup.log Check" -Recommendation "The ccmsetup.log file doesn't exist."
 }
+
+# Assigned Site validation
+$checksNumber += 1
+if ([string]::IsNullOrWhiteSpace($siteCode) -or $siteCode.Length -ne 3) {
+    Add-HtmlErrorFinding -Title "Assigned Site Check" -Recommendation "The client has no valid assigned site code. Check client push/install parameters, boundaries, and site assignment."
+}
+else {
+    Add-HtmlOkFinding -Title "Assigned Site Check"
+}
+
 
 
 # Maintanance Windows
@@ -578,6 +628,7 @@ $neededTriggers = @{
 $triggers = Get-WmiObject -Namespace "root\ccm\scheduler" -Class "CCM_Scheduler_History" | select ScheduleID, LastTriggerTime
 $SMSClient = Get-WMIObject -Namespace "root\ccm" -Class SMS_Client -list
 
+$success = $true
 $result = foreach ($id in $neededTriggers.Keys) {
 
     $match = $triggers | Where-Object { $_.ScheduleID -eq $id }
@@ -589,7 +640,7 @@ $result = foreach ($id in $neededTriggers.Keys) {
         LastTriggerTime = $match.LastTriggerTime
     }
 
-    $success = $true
+    
     try{
         $SMSClient.TriggerSchedule($id) | Out-Null        
     
@@ -624,6 +675,9 @@ if($missingActions){
     }
     Add-HtmlErrorFinding -Title "Missing Actions Check" -Recommendation "Missing actions in the Scheduler namespace:<br> $missingActionNamesForHTML <br><br> The ConfigMgr Client has to be reinstalled."
 } else{Add-HtmlOkFinding -Title "Missing Actions Check"}
+
+
+
 
 
 # Count of the Installed Components
@@ -699,12 +753,15 @@ if($certificatesForConfigMgr.Count -eq 2){
         $checksNumber += 1
         $friendlyName = $cert.FriendlyName
         $notAfterInDays = ($cert.NotAfter - (Get-Date)).Days
-    
         if($notAfterInDays -gt 0){
             Add-HtmlOkFinding -Title "$friendlyName Expiration Date Check"            
         }else{ 
             Add-HtmlErrorFinding -Title "$friendlyName is expired" -Recommendation "$friendlyName certificate is expired. <br> Recommendation: Stop the SMS Agent Host service, open certlm.msc as administrator, delete the certificates in the SMS store and start the SMS Agent Host. <br> The Certificates will be regenerated."
        }
+       $checksNumber += 1
+       if($cert.HasPrivateKey){
+            Add-HtmlOkFinding -Title "$friendlyName Private Key Check" 
+       }else{Add-HtmlErrorFinding -Title "$friendlyName Private Key Check" -Recommendation "The $friendlyName has no private key. Recommendation: Stop the SMS Agent Host service, open certlm.msc as administrator, delete the certificates in the SMS store and start the SMS Agent Host. <br> The Certificates will be regenerated."}
     
     }
 }else{
@@ -846,14 +903,94 @@ if ($CCMService) {
         Add-HtmlErrorFinding -Title "SMS Agent Host Service Present Check" -Recommendation "The SMS Agent Host service not present on the machine. ConfigMgr has to be reinstalled"
 }
 
-# Connect to SMS_Client WMI Class
-$checksNumber += 1
-Try {
-    $WMI = Get-WmiObject -Namespace root/ccm -Class SMS_Client -ErrorAction Stop 
-    Add-HtmlOkFinding -Title "WMI Connection Check to CCM Namespace"
-} 
-Catch {
-    Add-HtmlErrorFinding -Title "WMI Connection Check to CCM Namespace" -Recommendation "Failed to connect to WMI namespace root/ccm class SMS_Client. Clearing WMI and reinstalling ConfigMgr is needed."
+# check if the log file has been updated in the last 24 hours
+function Test-LogFreshness {
+    param(
+        [string]$LogPath,
+        [int]$MaxAgeHours = 24,
+        [string]$Title
+    )
+
+    $script:checksNumber += 1
+
+    if (-not (Test-Path $LogPath)) {
+        Add-HtmlErrorFinding -Title $Title -Recommendation "Log file not found: $LogPath"
+        return
+    }
+
+    $lastWrite = (Get-Item $LogPath).LastWriteTime
+    $ageHours = [math]::Round(((Get-Date) - $lastWrite).TotalHours, 1)
+
+    if ($ageHours -le $MaxAgeHours) {
+        Add-HtmlOkFinding -Title $Title
+    }
+    elseif ($ageHours -le ($MaxAgeHours * 3)) {
+        Add-HtmlWarningFinding -Title $Title -Recommendation "Log is stale. Last modified $ageHours hours ago."
+    }
+    else {
+        Add-HtmlErrorFinding -Title $Title -Recommendation "Log is too old. Last modified $ageHours hours ago."
+    }
+}
+
+Test-LogFreshness -LogPath "$logDirectory\PolicyAgent.log" -MaxAgeHours 24 -Title "PolicyAgent.log Freshness Check"
+Test-LogFreshness -LogPath "$logDirectory\PolicyEvaluator.log" -MaxAgeHours 24 -Title "PolicyEvaluator.log Freshness Check"
+
+
+# function for checking the log files content
+function Test-LogFile {
+    param(
+        [string]$Title,
+        [string]$LogPath,
+        [string[]]$Patterns,
+        [string]$Recommendation
+    )
+
+    $script:checksNumber += 1
+
+    if (-not (Test-Path $LogPath)) {
+        Add-HtmlWarningFinding -Title $Title -Recommendation "Log file not found: $LogPath"
+        return
+    }
+    # in the -notmatch section specific error codes can be ignored
+    $matches = Get-Content $LogPath -Tail 300 | Select-String -Pattern $Patterns | Where-Object { ($_ -notmatch "0x00000001") -and ($_ -notmatch "0x0000000a") -and ($_ -notmatch "0x0") } 
+
+    if ($matches) {
+        Add-HtmlWarningFinding -Title $Title -Recommendation "$Recommendation Check the <b><i>Highlighted errors in the ConfigMgr logs </i></b> section for more details and do the troubleshooting based on the error codes."
+    }
+    else {
+        Add-HtmlOkFinding -Title $Title
+    }
+}
+
+Test-LogFile -Title "LocationServices.log Check" -LogPath "$logDirectory\LocationServices.log" -Patterns @("error","failed","unable","no locations found") -Recommendation "Possible issues with the DNS, Management Point, BoundaryGroups (IP range + AD Site) - it has to be checked.<br>Try to trigger the Machine Policy Retrieval & Evaluation Cycle."
+Test-LogFile -Title "CAS.log Check" -LogPath "$logDirectory\CAS.log" -Patterns @("error","failed","hash","corrupt") -Recommendation "There could be an issue with the ccmcache. Maybe it helps to clear the content of the ccmcache and force the ConfigMgr to download the content again."
+Test-LogFile -Title "ContentTransferManager.log Check" -LogPath "$logDirectory\ContentTransferManager.log" -Patterns @("error","failed","timeout") -Recommendation "Possible issues with the DNS, Distribution Point, BoundaryGroups. <br>Check the connection to the DP and the BITS (Get-BitsTransfer -AllUsers)."
+Test-LogFile -Title "DataTransferService.log Check" -LogPath "$logDirectory\DataTransferService.log" -Patterns @("error","failed","0x802000","0x80072","0x800700") -Recommendation "Possible issue with the downloading of the content. <br>If the downloading process stucked in the Software Center: check the firewall, disk space, restart the BITS service.<br>If nothing helps reset the BITS queue: Get-BitsTransfer -AllUsers | Remove-BitsTransfer"
+Test-LogFile -Title "WUAHandler.log Check" -LogPath "$logDirectory\WUAHandler.log" -Patterns @("error","failed","scan failed","0x") -Recommendation "Possible issue to connect to the WSUS. If no updates in the Software Center: <br>check the HKLM\Software\Policies\Microsoft\Windows\WindowsUpdate registry keys<br> check if the DualScan is enabled which is causing the issue <br> trigger the update related actions in the ConfigMgr"
+Test-LogFile -Title "ScanAgent.log Check" -LogPath "$logDirectory\ScanAgent.log" -Patterns @("error","failed","scan failed","0x") -Recommendation "Possible issue with the scan. Trigger the update related actions in the ConfigMgr again"
+Test-LogFile -Title "UpdatesDeployment.log Check" -LogPath "$logDirectory\UpdatesDeployment.log" -Patterns @("error","failed","deadline","not targeted","0x") -Recommendation "Possible issue with the update deployment. Check <br>if the machine is in the right collection<br>if the deployment is active in MCM<br>if the maintanance window is not blocking<br>trigger the Machine Policy Retrieval & Evaluation Cycle"
+Test-LogFile -Title "UpdatesHandler.log Check" -LogPath "$logDirectory\UpdatesHandler.log" -Patterns @("error","failed","0x") -Recommendation "Possible issue with the update installation. Check the CBS.log, pending reboot, disk space."
+
+
+
+
+# ConfigMgr namespace health
+$namespaces = @(
+    "root\ccm",
+    "root\ccm\policy",
+    "root\ccm\clientsdk",
+    "root\ccm\SoftwareUpdates\UpdatesStore"
+)
+
+foreach ($ns in $namespaces) {
+    $checksNumber += 1
+    try {
+        Get-WmiObject -Namespace $ns -List -ErrorAction Stop | Out-Null
+        Add-HtmlOkFinding -Title "Namespace Check ($ns)"
+    }
+    catch {
+        Add-HtmlErrorFinding -Title "Namespace Check ($ns)" -Recommendation "The namespace cannot be accessed. WMI/ConfigMgr client repair or reinstall may be needed."
+    }
 }
 
 # General WMI Check
@@ -987,7 +1124,7 @@ else {
 
 # Checking Services
 $checksNumber += 1
-$services = @("BITS", "winmgmt", "wuauserv", "lanmanserver", "RpcSs", "W32Time", "ccmexec")
+$services = @("BITS", "winmgmt", "wuauserv", "lanmanserver", "RpcSs", "W32Time", "ccmexec", "CryptSvc")
 $notRunningServices = ""
 foreach ($service in $services) {
 
@@ -1032,19 +1169,24 @@ if (Select-String -Path "C:\Windows\CCM\Logs\CcmEval.log" -Pattern "failed" -Qui
         foreach($errorInCcmEval in $errorsInCcmEval) {
             if(($errorInCcmEval -replace '.*<!\[LOG\[','' -replace '\]LOG\].*','') -ne "Failed to get SOFTWARE\Policies\Microsoft\Microsoft Antimalware\Real-Time Protection\DisableIntrusionPreventionSystem"){
                 $logLine = ($errorInCcmEval -replace '.*<!\[LOG\[','' -replace '\]LOG\].*','')
-                if (-not $clientHealthForHTML.Contains("$logLine <br>")) {
+                if (-not $clientHealthForHTML.Contains("$logLine <br>") -and $logLine -ne "Can't determine whether previous sent succeed, assume sent failed") {
+
                     $clientHealthForHTML += "$logLine <br>"
                 }
                 
             }
             
         }
-        Add-HtmlWarningFinding -Title "Client Health Check Based On CcmEval.log" -Recommendation "Errors:<br>$clientHealthForHTML"
+        
     } 
+
+
+if($clientHealthForHTML){
+    Add-HtmlWarningFinding -Title "Client Health Check Based On CcmEval.log" -Recommendation "Errors:<br>$clientHealthForHTML"
+}
 else {
     Add-HtmlOkFinding -Title "Client Health Check Based On CcmEval.log"
 }
-
 # Checking Hardware Inventory Scan
 $checksNumber += 1
 $wmi = Get-WmiObject -Namespace root\ccm\invagt -Class InventoryActionStatus | Where-Object {$_.InventoryActionID -eq '{00000000-0000-0000-0000-000000000001}'} | Select-Object @{label='HWSCAN';expression={$_.ConvertToDateTime($_.LastCycleStartedDate)}} 
@@ -1260,7 +1402,8 @@ $htmlContent += @"
 
 
 
-$outputPath = ".\services_report.html"
+$hostname = $env:COMPUTERNAME
+$outputPath = "C:\Temp\" + $hostname + "_ConfigMgr_TS_Report.html"
+
 $htmlContent | Out-File -FilePath $outputPath -Encoding UTF8
 
-Start-Process $outputPath
