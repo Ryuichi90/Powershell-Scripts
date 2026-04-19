@@ -1,26 +1,6 @@
 $hostname = $env:COMPUTERNAME
 
 
-function Convert-ToStyledHtmlTable {
-    param(
-        [Parameter(Mandatory = $true)]
-        [object]$Data,
-
-        [Parameter(Mandatory = $true)]
-        [string]$Title
-    )
-
-    $table = $Data | ConvertTo-Html -Fragment
-
-    return @"
-<div class="section">
-    <h2>$Title</h2>
-    $table
-</div>
-"@
-}
-
-
 # HTML style
 $htmlContent = @"
 <!DOCTYPE html>
@@ -454,7 +434,7 @@ $htmlContent += @"
         <details>
     <summary>FIREWALL RULE</summary>
     <p>
-        $firewallrulesHtml
+        <pre style="max-height:400px; max-width:650px;overflow:auto;">$firewallrulesHtml</pre>
     </p>
     </details>
 
