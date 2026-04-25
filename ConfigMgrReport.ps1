@@ -11,6 +11,7 @@ function Add-HtmlErrorFinding {
     )
 
     $script:errorCount += 1
+    Write-Host "$checksNumber : $Title"
 
     $script:htmlContent += @"
 <div class="finding error">
@@ -34,6 +35,7 @@ function Add-HtmlWarningFinding {
     )
 
     $script:warningCount += 1
+    Write-Host "$checksNumber : $Title"
 
     $script:htmlContent += @"
 <div class="finding warning">
@@ -56,6 +58,7 @@ function Add-HtmlOkFinding {
     )
 
     $script:successCount += 1
+    Write-Host "$checksNumber : $Title"
 
     $script:htmlContent += @"
 <div class="finding ok">
@@ -222,6 +225,37 @@ code {
   .wrapper { padding: 14px; }
   .kpi-grid { grid-template-columns: 1fr; }
 }
+
+table {
+        border-collapse: collapse;
+        width: 100%;
+        background: transparent;
+        box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+    }
+
+    th, td {
+        border: 1px solid transparent;
+        padding: 8px 10px;
+        text-align: left;
+        vertical-align: top;
+        word-break: break-word;
+        overflow-wrap: break-word;
+    }
+
+    th {
+        background: transparent;
+        color: white;
+    }
+
+    tr:nth-child(even) {
+        background: transparent;
+    }
+
+    tr:hover {
+        background: #1E2648;
+    }
+
+
 </style>
 </head>
 <body>
@@ -324,12 +358,7 @@ $lastUpdates = $Searcher.QueryHistory(0, $HistoryCount) | select Date, Title  | 
 $stringForHTMLInstalledCumulativeUpdates = ""
 
 if($lastUpdates){
-    foreach($lastUpdate in $lastUpdates){
-    $date = $lastUpdate.Date
-    $title = $lastUpdate.Title
-    $stringForHTMLInstalledCumulativeUpdates += "$date - $title <br><br>"
-
-    }
+    $stringForHTMLInstalledCumulativeUpdates = $lastUpdates | ConvertTo-Html -Fragment
 }else{$stringForHTMLInstalledCumulativeUpdates = "Couldn't find any installed cumulative update in the update history"}
 
 
@@ -338,42 +367,39 @@ $stringForHTMLAllInstalledUpdates = ""
 $allInstalledUpdates = $Searcher.QueryHistory(0, $HistoryCount) | select Date, Title 
 
 if($allInstalledUpdates){
-    foreach($allInstalledUpdate in $allInstalledUpdates){
-    $date = $allInstalledUpdate.Date
-    $title = $allInstalledUpdate.Title
-    $stringForHTMLAllInstalledUpdates += "$date - $title <br><br>"
-
-    }
+    $stringForHTMLAllInstalledUpdates = $allInstalledUpdates | ConvertTo-Html -Fragment
 }else{$stringForHTMLAllInstalledUpdates = "Couldn't find any update history"}
 
 
 # Update errors in the event log
 $updateInstallErrors = Get-WinEvent -LogName System -FilterXPath "*[System[(EventID=20 or EventID=25 or EventID=31)]]" | where {$_.LevelDisplayName -eq "Error"} | select TimeCreated,Message
 
-$stringForHTMLInstallError = ""
+
 
 if($updateInstallErrors){
-    foreach($updateInstallError in $updateInstallErrors){
-    $time = $updateInstallError.TimeCreated
-    $message = $updateInstallError.Message
-    $stringForHTMLInstallError += "$time - $message <br><br>"
-
-    }
+    $stringForHTMLInstallError = $updateInstallErrors | ConvertTo-Html -Fragment
 }else{$stringForHTMLInstallError = "There's no update error in the Event logs for the 20, 25, 31 EventIDs"}
 
 # Missing Updates
-$missingUpdates = get-wmiobject -query "SELECT * FROM CCM_UpdateStatus" -namespace "root\ccm\SoftwareUpdates\UpdatesStore" | where {$_.title -like "*Cumulative*" -and $_.status -eq "Missing"} | select title
-
-$stringForHTMLMissingUpdate = ""
+$missingUpdates = get-wmiobject -query "SELECT * FROM CCM_UpdateStatus" -namespace "root\ccm\SoftwareUpdates\UpdatesStore" | where {$_.title -like "*Cumulative*" -and $_.status -eq "Missing"} | select Title, Status
 
 if($missingUpdates){
-    foreach($missingUpdate in $missingUpdates){
-    $date = $missingUpdate.Date
-    $title = $missingUpdate.Title
-    $stringForHTMLMissingUpdate += "$date - $title <br><br>"
-
-    }
+    $stringForHTMLMissingUpdate = $missingUpdates | ConvertTo-Html -Fragment
 }else{$stringForHTMLMissingUpdate = "The client can not recognize that any updates are deployed but not installed"}
+
+$doStatus = Get-DeliveryOptimizationStatus | select `
+    FileId,
+    FileSize,
+    TotalBytesDownloaded,
+    BytesFromPeers,
+    BytesFromHttp,
+    Status,
+    DownloadDuration,
+    DownloadMode, 
+    SourceURL | ConvertTo-Html -Fragment
+
+
+$doLogs = Get-DeliveryOptimizationLog | Select-Object -last 150 | select TimeCreated, Message | ConvertTo-Html -Fragment
 
 # Hardware Informations
 $disk = Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='C:'"
@@ -479,25 +505,57 @@ $htmlContent += @"
     
   </div>
 
-  <div class="grid-2">
-    <section class="card">
+  <div class="section">
+    <section class="card section">
       <h2>Recent Update State</h2>
-      <div class="small" style="margin-bottom:10px; font-weight: bold; color: white">The Installed Cumulative Updates:</div>
-      <div class="section small" style="margin-bottom:10px;">$stringForHTMLInstalledCumulativeUpdates</div>
 
-      <div class="small" style="margin-bottom:10px; font-weight: bold; color: white">Missing Updates:</div>
-      <div class="section small" style="margin-bottom:10px;">$stringForHTMLMissingUpdate</div>
-      
-      <div class="section" style="margin-bottom:10px; font-weight: bold; color: white">Update Failures in the Event Log:</div>
-      <div class="section small" style="margin-bottom:10px;">$stringForHTMLInstallError</div>
-    </section>
+      <details>
+        <summary><b>The Installed Cumulative Updates</b></summary>
+        <p>
+            $stringForHTMLInstalledCumulativeUpdates
+        </p>
+      </details>
 
-    <section class="card">
-        <h2>Installed Updates Snapshot</h2>
-        <div class="small" style="margin-bottom:10px;">$stringForHTMLAllInstalledUpdates</div>
+      <details>
+        <summary><b>Missing Updates</b></summary>
+        <p>
+            $stringForHTMLMissingUpdate
+        </p>
+      </details>
+
+      <details>
+        <summary><b>Update Failures in the Event Log</b></summary>
+        <p>
+            $stringForHTMLInstallError
+        </p>
+      </details>
+
+
+      <details>
+        <summary><b>Installed Updates Snapshot</b></summary>
+        <p>
+            $stringForHTMLAllInstalledUpdates
+        </p>
+      </details>
+
+      <details>
+        <summary><b>Delivery Optimization Status</b></summary>
+        <p>
+            $doStatus
+        </p>
+      </details>
+
+      <details>
+        <summary><b>Delivery Optimization Logs (last 150)</b></summary>
+        <p>
+            $doLogs
+        </p>
+      </details>
+
     </section>
 
   </div>
+
     <div class="section">
     <section class="card section">
     <h2>Issue Check Overview</h2>
@@ -1256,6 +1314,7 @@ $includedLogs = @(
     "ScanAgent.log",
     "CAS.log",
     "ContentTransferManager.log",
+    "DeltaDownload.log"
     "DataTransferService.log"
 )
 
@@ -1369,6 +1428,34 @@ foreach ($logFile in $logFiles) {
     }
 }
 
+function Parse-CMLog {
+    param($Path)
+
+    Get-Content $Path | ForEach-Object {
+        if ($_ -match '<!\[LOG\[(.*?)\]LOG\]!><time="(.*?)".*date="(.*?)"') {
+            [PSCustomObject]@{
+                DateTime = "$($matches[3]) $($matches[2])"
+                Message  = $matches[1]
+            }
+        }
+    }
+}
+
+$logPath = "C:\Windows\CCM\Logs"
+$logHtmlFragments = @{}
+
+foreach ($log in $includedLogs) {
+    $fullPath = Join-Path $logPath $log
+
+    if (Test-Path $fullPath) {
+        Write-Host "Getting $log content"
+        $data = Parse-CMLog $fullPath
+
+        $logHtmlFragments[$log] = $data | ConvertTo-Html -Fragment `
+            -PreContent "<h3>$log</h3>"
+    }
+}
+
 
 
 $htmlContent += @"
@@ -1379,17 +1466,110 @@ $htmlContent += @"
 <h2>Error code translation for DISM and CBS logs</h2>
 <div class="section" style="margin-bottom:10px;"$resultsForDismAndCbs</div>
 
-"@
 
-
-$htmlContent += @"
     </div>
     </section>
 
+
+    <div class="section">
+    <section class="card section">
+    <h2>Log Collector</h2>
+
+    <details>
+    <summary><b>ClientIDManagerStartup.log</b></summary>
+    <p>$($logHtmlFragments["ClientIDManagerStartup.log"])</p>
+</details>
+
+<details>
+    <summary><b>ClientLocation.log</b></summary>
+    <p>$($logHtmlFragments["ClientLocation.log"])</p>
+</details>
+
+<details>
+    <summary><b>LocationServices.log</b></summary>
+    <p>$($logHtmlFragments["LocationServices.log"])</p>
+</details>
+
+<details>
+    <summary><b>PolicyAgent.log</b></summary>
+    <p>$($logHtmlFragments["PolicyAgent.log"])</p>
+</details>
+
+<details>
+    <summary><b>CcmMessaging.log</b></summary>
+    <p>$($logHtmlFragments["CcmMessaging.log"])</p>
+</details>
+
+<details>
+    <summary><b>CcmEval.log</b></summary>
+    <p>$($logHtmlFragments["CcmEval.log"])</p>
+</details>
+
+<details>
+    <summary><b>CcmExec.log</b></summary>
+    <p>$($logHtmlFragments["CcmExec.log"])</p>
+</details>
+
+<details>
+    <summary><b>ExecMgr.log</b></summary>
+    <p>$($logHtmlFragments["ExecMgr.log"])</p>
+</details>
+
+<details>
+    <summary><b>InventoryAgent.log</b></summary>
+    <p>$($logHtmlFragments["InventoryAgent.log"])</p>
+</details>
+
+<details>
+    <summary><b>WUAHandler.log</b></summary>
+    <p>$($logHtmlFragments["WUAHandler.log"])</p>
+</details>
+
+<details>
+    <summary><b>UpdatesDeployment.log</b></summary>
+    <p>$($logHtmlFragments["UpdatesDeployment.log"])</p>
+</details>
+
+<details>
+    <summary><b>UpdatesHandler.log</b></summary>
+    <p>$($logHtmlFragments["UpdatesHandler.log"])</p>
+</details>
+
+<details>
+    <summary><b>UpdatesStore.log</b></summary>
+    <p>$($logHtmlFragments["UpdatesStore.log"])</p>
+</details>
+
+<details>
+    <summary><b>ScanAgent.log</b></summary>
+    <p>$($logHtmlFragments["ScanAgent.log"])</p>
+</details>
+
+<details>
+    <summary><b>CAS.log</b></summary>
+    <p>$($logHtmlFragments["CAS.log"])</p>
+</details>
+
+<details>
+    <summary><b>ContentTransferManager.log</b></summary>
+    <p>$($logHtmlFragments["ContentTransferManager.log"])</p>
+</details>
+
+<details>
+    <summary><b>DeltaDownload.log</b></summary>
+    <p>$($logHtmlFragments["DeltaDownload.log"])</p>
+</details>
+
+<details>
+    <summary><b>DataTransferService.log</b></summary>
+    <p>$($logHtmlFragments["DataTransferService.log"])</p>
+</details>
+
     </div>
+    </section>
 
 
-
+    </div>
 
   </section>
 
@@ -1406,4 +1586,3 @@ $hostname = $env:COMPUTERNAME
 $outputPath = "C:\Temp\" + $hostname + "_ConfigMgr_TS_Report.html"
 
 $htmlContent | Out-File -FilePath $outputPath -Encoding UTF8
-
